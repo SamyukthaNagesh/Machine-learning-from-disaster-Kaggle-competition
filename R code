@@ -1,0 +1,202 @@
+#SamyukthaNagesh 18May2018
+#kaggle competition attempt- machine learning from disaster
+
+#Setting the working directory
+
+setwd("~/Documents/learning/R practice/Titanic Dataset")
+
+#Importing/reading the test and train datasets
+
+library(readr)
+
+#while importing the datasets, I could not edit the datatypes of the required fields to set it as a 'Factor' 
+#so I will be explicitly converting them to factors after importing
+
+train <- read.csv("~/Documents/learning/R practice/Titanic Dataset/train.csv")
+
+#?as.factor
+
+as.factor(train$Sex)
+as.factor(train$Name)
+as.factor(train$Ticket)
+as.factor(train$Cabin)
+as.factor(train$Embarked)
+names(train)<-tolower(names(train))
+View(train)
+
+test <- read.csv("~/Documents/learning/R practice/Titanic Dataset/test.csv")
+as.factor(test$Sex)
+as.factor(test$Name)
+as.factor(test$Ticket)
+as.factor(test$Cabin)
+as.factor(test$Embarked)
+names(test)<-tolower(names(test))
+View(test)
+
+#?str
+str(train)
+str(test)
+
+##First prediction
+#everybodydiesprediction
+
+test$survived<-rep(0,418)
+submission1<-data.frame(passengerId=test$PassengerId, survived=test$survived)
+write.csv(submission1, file = "submission1:everybodydies", row.names = FALSE)
+
+#Gender-class model
+
+summary(train$sex)
+
+#How many males and how many females survived?
+
+prop.table(table(train$sex, train$survived),1)
+
+#predicting that all females survive
+
+test$survived<-0
+attributes(test)
+test$survived[test$sex=='female']<-1
+
+#Exploring the age variable
+summary(train$age)
+
+#is the passenger a child or not?
+
+train$child<-0
+train$child[train$age<18]<-1
+aggregate(survived~child+sex, data = train, FUN = sum)
+aggregate(survived~child+sex, data = train, FUN = function(x) {sum(x)/length(x)})
+
+#Exploring the tickect price and class variables
+
+summary(train$fare)
+boxplot(train$fare)
+
+#I will be bin-ing the fares
+
+train$fare2<- '30+'
+train$fare2[train$fare< 30 & train$fare>=20]<-'20-30'
+train$fare2[train$fare< 20 & train$fare>=10]<-'10-20'
+train$fare2[train$fare<10]<-'<10'
+
+aggregate(survived~ fare2+pclass+child+sex, data = train, FUN = function(x){sum(x)/length(x)})
+
+#second prediction: women in the 3rd class who paid >$20 for the tickect don't survive
+test$survived<-NULL
+test$survived<-0
+test$survived[test$sex=='female']<-1
+test$survived[test$sex=='female' & test$pclass== 3 & test$fare>=20]<-0
+
+submission2<-data.frame (passengerId= test$passengerid, survived=test$survived)
+write.csv(submission2, file = "submission2:allmen&3classwomendie", row.names = FALSE)
+
+# decision trees
+#the 'rpart' library which is for recursive partitioning and regression trees is used here
+
+library(rpart)
+fit<-rpart(survived~pclass+sex+age+sibsp+parch+fare+embarked, data = train, method = "class")
+
+install.packages("rpart.plot")
+library(rpart.plot)
+rpart.plot(fit)
+
+prediction<-predict(fit,test, type = 'class')
+
+#Feature Engineering
+
+test$survived<-NA
+train$child<-NULL
+train$fare2<-NULL
+
+#joining the test and train set into one data frame
+combined<-rbind(train,test)
+combined$name<-as.character(combined$name)
+combined$name
+
+?strsplit
+strsplit(combined$name[1], split='[,.]')[[1]][2]
+combined$title<-sapply(combined$name, FUN = function(x){strsplit(x, split = '[,.]')[[1]][2]})
+head(combined$title)
+#getting rid of the blank spaces in between
+combined$title<-sub(' ', '', combined$title)
+table(combined$title)
+combined$title[combined$title%in% c('Mlle', 'Mme')]<-'Mlle'
+combined$title[combined$title%in% c('Capt', 'Don', 'Major', 'Sir')]<-'Sir'
+combined$title[combined$title%in% c('Dona', 'Jonkheer', 'Lady', 'the Countess')]<-'Lady'
+combined$title<-factor(combined$title)
+
+#combining the number of parents, siblings and 1 for self to create a new column ie the family size
+
+combined$familysize<-combined$sibsp+combined$parch+1
+combined$surname<-sapply(combined$name, FUN = function(x){strsplit(x, split = '[,.]')[[1]][1]})
+combined$familyID<-paste(as.character(combined$familysize), combined$surname, sep = "")
+table(combined$familyID)
+combined$familyID[combined$familysize<=2]<-'small'
+famID<-data.frame(table(combined$familyID))
+View(famID)
+famID<-famID[famID$freq<=2]
+combined$familyID[combined$familyID%in%famID$Var1]<-'small'
+table(combined$familyID)
+combined$familyID<-factor(combined$familyID)
+
+# splitting the train and test sets back separately
+
+train<-combined[1:891,]
+test<-combined[892:1309,]
+
+#3rd prediction
+
+fit2<-rpart(survived~pclass+sex+age+sibsp+parch+fare+embarked+title+familysize+familyID, 
+            data = test, method = 'class')
+rpart.plot(fit2)
+prediction2<-predict(fit2,test, type = 'class')
+submission3<-data.frame(passengerid=test$passengerid, survived=test$survived)
+write.csv(submission3, file = "submission3:predction-featureengineering+decisiontree", row.names = FALSE)
+
+#Random Forest
+
+#handeling missing values in age and 'NA's in embarked and fare colums 
+
+library(rpart)
+agefit<-rpart(age~sex+parch+sibsp+familysize+pclass+fare+embarked+title, 
+              data = combined[!is.na(combined$age),], method="anova")
+combined$age[is.na(combined$age)] <- predict(agefit, combined[is.na(combined$age),])
+which(combined$embarked=='')
+combined$embarked[c(62,830)]<-'S'
+combined$embarked<-factor(combined$embarked)
+summary(combined$fare)
+which(is.na(combined$fare))
+combined$fare[1044]<-median(combined$fare, na.rm = TRUE)
+
+#The random forest can only take in 32 levels whereas our familyId has nearly 64 of them 
+
+combined$familyID2<-combined$familyID
+combined$familyID2<-as.character(combined$familyID2)
+combined$familyID2[combined$familysize<=3]<-'small'
+combined$familyID2<-factor(combined$familyID2)
+
+#splitting the combined data into train and test set
+
+train<-combined[1:891,]
+test<-combined[892:1309,]
+
+#installing the random forest package
+
+install.packages('randomForest')
+library(randomForest)
+
+# because our model-random forest has randomness, it produces different results each time we run the code. 
+#one way to avoid this is to set seed to an arbitrary value. The number isnt important. 
+#It just makes sure that the same random numbers will be generated inside the random forest each time we run the code
+
+set.seed(500)
+
+fit3<-randomForest(as.factor(survived)~pclass+sex+age+sibsp+parch+fare+embarked+title+familyID2+familysize,
+                   data = train, importance= TRUE, ntree=2000)
+?varImpPlot
+varImpPlot(fit3)
+prediction3<-predict(fit3, test)
+submission4<- data.frame(passengerid = test$passengerid, survived = prediction)
+setwd("~/Documents/learning/R practice/Titanic Dataset")
+write.csv(submission4, file = "randomforest.csv", row.names = FALSE)
